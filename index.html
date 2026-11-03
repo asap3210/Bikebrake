@@ -138,6 +138,10 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
     <select id="posMode"><option value="dim">Tenue fija</option><option value="flash">Destello</option><option value="off">Apagada</option></select>
   </div>
   <div class="row">
+    <label for="torchMode">Linterna del móvil</label>
+    <select id="torchMode"><option value="off">Apagada</option><option value="brake">Al frenar y parado</option></select>
+  </div>
+  <div class="row">
     <span>Invertir sentido de marcha</span>
     <button id="btnFlip" aria-pressed="false" style="min-height:40px">No</button>
   </div>
@@ -629,6 +633,42 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
     }
     return lampLevel(s, since);
   }
+
+  /* ---------- linterna (opcional, si el móvil lo permite) ---------- */
+  var torch = { stream: null, track: null, on: false, busy: false };
+  async function enableTorch() {
+    disableTorch();
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { torchFail('Este navegador no permite usar la linterna.'); return false; }
+    try {
+      var stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } } });
+      var track = stream.getVideoTracks()[0];
+      var caps = track && track.getCapabilities ? track.getCapabilities() : {};
+      if (!caps.torch) { stream.getTracks().forEach(function (x) { x.stop(); }); torchFail('Tu móvil o navegador no permite controlar la linterna. Se usa solo la pantalla.'); return false; }
+      torch.stream = stream; torch.track = track; torch.on = false;
+      note('Linterna lista. La cámara queda activa mientras esté habilitada.');
+      return true;
+    } catch (e) {
+      torchFail(e && e.name === 'NotAllowedError' ? 'Sin permiso de cámara, la linterna no puede encenderse.' : 'No se pudo preparar la linterna.');
+      return false;
+    }
+  }
+  function torchFail(msg) { $('torchMode').value = 'off'; note(msg); }
+  function disableTorch() {
+    if (torch.track) { try { torch.track.applyConstraints({ advanced: [{ torch: false }] }).catch(function () {}); } catch (e) {} }
+    if (torch.stream) torch.stream.getTracks().forEach(function (x) { x.stop(); });
+    torch.stream = null; torch.track = null; torch.on = false;
+  }
+  function driveTorch(want) {
+    if (!torch.track || torch.busy || want === torch.on) return;
+    torch.busy = true;
+    torch.track.applyConstraints({ advanced: [{ torch: want }] })
+      .then(function () { torch.on = want; })
+      .catch(function () {})
+      .then(function () { torch.busy = false; });
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden && $('torchMode').value === 'brake' && (!torch.track || torch.track.readyState !== 'live')) enableTorch();
+  });
   var cv = $('cv'), ctx = cv.getContext('2d');
   var COL = { 0: '#3ecf8e', 1: '#ff4a3a', 2: '#f6b93b', 3: '#ff4a3a' };
   function draw() {
@@ -678,6 +718,7 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
     lamp.style.background = 'rgb(' + Math.round(58 + 197 * lv) + ',' + Math.round(21 + 53 * lv) + ',' + Math.round(18 + 40 * lv) + ')';
     lamp.style.boxShadow = 'inset 0 0 0 3px #00000040, 0 0 ' + Math.round(46 * lv) + 'px rgba(255,74,58,' + (0.75 * lv).toFixed(2) + ')';
 
+    if ($('torchMode').value === 'brake') driveTorch(rearLevel(s, t - lampSince, t) > 0.5);
     var hasData = demo || (sensorsOn && t - lastSample < 1.5);
     var okCal = det.isCalibrated();
     var st = $('state');
@@ -846,6 +887,7 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
   ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) { $('slExit').addEventListener(ev, function () { clearTimeout(holdT); }); });
   $('slExit').addEventListener('click', function (e) { if (e.detail === 0) closeOverlay(); });   // teclado
   $('posMode').addEventListener('change', save);
+  $('torchMode').addEventListener('change', function () { if ($('torchMode').value === 'brake') enableTorch(); else { disableTorch(); note(''); } });
 
   load(); applySens(); applyFlip();
   if (!navigator.bluetooth) note('Este navegador no tiene Web Bluetooth. Para conectar la luz usa Chrome en Android. La demo funciona en cualquier navegador.');
