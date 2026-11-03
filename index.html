@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0e1013">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Luz freno">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Luz de freno para bici</title>
+<style>
+/* Idea: panel nocturno de manillar. Un estado enorme arriba, datos y gráfica debajo, controles al final. */
+:root {
+  --bg: #0e1013;
+  --panel: #171a1f;
+  --line: #272c34;
+  --text: #e9ecf0;
+  --muted: #8d96a3;
+  --brake: #ff4a3a;
+  --ok: #3ecf8e;
+  --warn: #f6b93b;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font); -webkit-text-size-adjust: 100%; }
+body { padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom)); display: flex; justify-content: center; }
+main { width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: 14px; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+h1 { font-size: 1.05rem; margin: 0; font-weight: 650; letter-spacing: .01em; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { font-size: .75rem; padding: 4px 9px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); font-variant-numeric: tabular-nums; }
+.chip.on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+.chip.bad { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+
+.hero { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 18px; display: flex; align-items: center; gap: 18px; }
+.lamp { width: 84px; height: 84px; flex: none; border-radius: 50%; background: #3a1512; box-shadow: inset 0 0 0 3px #00000040; transition: background .08s, box-shadow .08s; }
+.hero-text { min-width: 0; }
+.state { font-size: 1.9rem; line-height: 1.05; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.why { margin-top: 6px; color: var(--muted); font-size: .92rem; line-height: 1.35; }
+.state[data-s="0"] { color: var(--ok); }
+.state[data-s="1"], .state[data-s="3"] { color: var(--brake); }
+.state[data-s="2"] { color: var(--warn); }
+
+.metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.metric { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+.metric b { display: block; font-size: 1.35rem; font-variant-numeric: tabular-nums; font-weight: 700; }
+.metric span { font-size: .72rem; color: var(--muted); }
+
+.graph { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 10px 10px 6px; }
+canvas { width: 100%; height: 150px; display: block; }
+.graph small { color: var(--muted); font-size: .72rem; display: block; margin-top: 4px; }
+
+.calib { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--warn); border-radius: 12px; padding: 12px 14px; font-size: .92rem; line-height: 1.4; }
+.calib.done { border-left-color: var(--ok); }
+
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+button { font: inherit; font-weight: 600; min-height: 48px; border-radius: 12px; border: 1px solid var(--line); background: #1e232a; color: var(--text); padding: 10px 12px; cursor: pointer; }
+button:hover { background: #262c35; }
+button.primary { background: var(--brake); border-color: var(--brake); color: #1a0705; }
+button.primary:hover { background: #ff6355; }
+button:focus-visible, input:focus-visible { outline: 3px solid var(--warn); outline-offset: 2px; }
+button[aria-pressed="true"] { border-color: var(--ok); color: var(--ok); }
+
+.row { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; font-size: .92rem; }
+.row input[type=range] { flex: 1; max-width: 220px; accent-color: var(--brake); }
+.tests { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.tests button { min-height: 44px; font-size: .8rem; padding: 6px; }
+h2 { font-size: .78rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 6px 2px 0; font-weight: 600; }
+ul.log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: .88rem; font-variant-numeric: tabular-nums; }
+ul.log li { display: flex; gap: 10px; padding: 7px 12px; background: var(--panel); border-radius: 8px; }
+ul.log time { color: var(--muted); }
+.note { font-size: .78rem; color: var(--muted); line-height: 1.45; }
+.banner { background: #2a2210; border: 1px solid #5a4a1a; color: #f3d98a; border-radius: 10px; padding: 9px 12px; font-size: .85rem; line-height: 1.4; }
+[hidden] { display: none !important; }
+#btnScreen, #btnRear { grid-column: 1 / -1; }
+select { font: inherit; background: #1e232a; color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; min-height: 40px; }
+.screenlight { position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px; background: #140403; padding: env(safe-area-inset-top) 16px env(safe-area-inset-bottom); }
+.screenlight .sl-state { font-size: clamp(2.2rem, 12vw, 4.5rem); font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: #fff; text-shadow: 0 2px 12px #0008; text-align: center; }
+.screenlight .sl-sub { color: #ffffffe6; font-size: 1.25rem; text-align: center; max-width: 28ch; line-height: 1.35; text-shadow: 0 1px 8px #0008; }
+.screenlight .sl-fwd { color: #ffffffd9; font-size: 1.1rem; font-variant-numeric: tabular-nums; text-shadow: 0 1px 8px #0008; text-align: center; }
+.screenlight button { position: absolute; bottom: max(24px, env(safe-area-inset-bottom)); background: #00000066; border-color: #ffffff55; color: #fff; min-width: 160px; }
+@media (prefers-reduced-motion: reduce) { .lamp { transition: none; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Luz de freno</h1>
+    <div class="chips">
+      <span class="chip" id="chipSensor">Sensores: apagados</span>
+      <span class="chip" id="chipBle">Luz: sin conectar</span>
+    </div>
+  </header>
+
+  <div class="banner" id="banner" hidden></div>
+
+  <section class="hero" aria-live="polite">
+    <div class="lamp" id="lamp"></div>
+    <div class="hero-text">
+      <div class="state" id="state" data-s="0">Sin datos</div>
+      <div class="why" id="why">Conecta la luz, inicia los sensores y calibra. O mira la demo.</div>
+    </div>
+  </section>
+
+  <section class="metrics" aria-label="Medidas en directo">
+    <div class="metric"><b id="mFwd">0.0</b><span>Fuerza en el sentido de marcha (m/s²)</span></div>
+    <div class="metric"><b id="mVib">0.00</b><span>Vibración (m/s²)</span></div>
+    <div class="metric"><b id="mGps">–</b><span>Velocidad GPS (km/h)</span></div>
+  </section>
+
+  <section class="graph">
+    <canvas id="cv" aria-label="Gráfica de la fuerza longitudinal en los últimos 12 segundos"></canvas>
+    <small>Últimos 12 s. Por debajo de la línea discontinua se enciende el freno. La rampa a rueda libre queda en 0.</small>
+  </section>
+
+  <div class="calib" id="calib">Sin calibrar. Con el móvil ya fijado al manillar, pulsa Calibrar.</div>
+
+  <div class="grid2">
+    <button class="primary" id="btnBle">Conectar luz</button>
+    <button id="btnSensors">Iniciar sensores</button>
+    <button id="btnCalib">Calibrar</button>
+    <button id="btnDemo">Ver demo</button>
+    <button id="btnRear" class="primary">Modo luz trasera (móvil viejo)</button>
+    <button id="btnScreen">Ver la pantalla como luz (con datos)</button>
+  </div>
+
+  <div class="row">
+    <label for="sens">Sensibilidad</label>
+    <input type="range" id="sens" min="1" max="5" step="1" value="3">
+    <output id="sensOut">media</output>
+  </div>
+  <div class="row">
+    <label for="posMode">Luz trasera, rodando</label>
+    <select id="posMode"><option value="dim">Tenue fija</option><option value="flash">Destello</option><option value="off">Apagada</option></select>
+  </div>
+  <div class="row">
+    <span>Invertir sentido de marcha</span>
+    <button id="btnFlip" aria-pressed="false" style="min-height:40px">No</button>
+  </div>
+
+  <h2>Probar la luz</h2>
+  <div class="tests">
+    <button data-test="0">Tenue</button>
+    <button data-test="1">Freno</button>
+    <button data-test="2">Parado</button>
+    <button data-test="3">Emergencia</button>
+  </div>
+
+  <h2>Últimos eventos</h2>
+  <ul class="log" id="log"><li><time>--:--</time><span>Todavía no hay eventos.</span></li></ul>
+
+  <p class="note"><b>Móvil viejo como luz trasera:</b> abre esta página en él, pulsa «Modo luz trasera» (la primera vez te guía para calibrar), pon el brillo al máximo y fíjalo al sillín o al portabultos con la pantalla hacia atrás. Detecta el frenado con sus propios sensores. Para salir, mantén pulsado «Salir».</p>
+  <p class="note">Esta app complementa, no sustituye, una luz trasera homologada. Mantén la pantalla encendida y baja el brillo al mínimo: si el móvil duerme, Chrome deja de enviar datos de los sensores.</p>
+</main>
+
+<div class="screenlight" id="screenLight" hidden aria-live="polite">
+  <div class="sl-state" id="slState">Rodando</div>
+  <div class="sl-sub" id="slSub"></div>
+  <div class="sl-fwd" id="slFwd"></div>
+  <button id="slExit">Volver</button>
+</div>
+
+<script>
+/* Detector de frenada para bici.
+ *
+ * Idea clave: el acelerómetro mide "fuerza específica" (todo lo que NO es gravedad).
+ * Proyectada sobre el eje delantero de la bici, esa fuerza es ~0 cuando ruedas libre,
+ * tanto en llano como en rampa o en bajada (la gravedad no se mide, la rampa no
+ * cuenta como frenada). Solo el freno (o el viento/rodadura, muy poco) la hace negativa.
+ *
+ * Estados de la luz:
+ *   0 RODANDO   luz tenue
+ *   1 FRENANDO  luz fuerte (destellos al inicio, luego fija)
+ *   2 PARADO    luz fuerte fija (semáforo): se queda encendida hasta que arrancas
+ *   3 EMERGENCIA frenada muy fuerte, destello rápido
+ *
+ * Todo se alimenta con update(t, mx, my, mz): t en segundos, m = accelerationIncludingGravity (m/s²).
+ */
+(function (root) {
+  'use strict';
+
+  var G = 9.80665;
+
+  function V(x, y, z) { return [x, y, z]; }
+  function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+  function norm(a) { return Math.sqrt(dot(a, a)); }
+  function scale(a, s) { return [a[0] * s, a[1] * s, a[2] * s]; }
+  function sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+  function unit(a) { var n = norm(a); return n > 1e-9 ? scale(a, 1 / n) : null; }
+
+  function Detector(opts) {
+    opts = opts || {};
+    this.cfg = {
+      sensitivity: 1.0,       // multiplica los umbrales (menor = más sensible)
+      brakeOn: -1.1,          // m/s² filtrados para entrar en FRENANDO
+      brakeOff: -0.5,         // m/s² para salir
+      brakeOnTime: 0.30,      // s sostenidos para confirmar (filtra baches)
+      brakeOffTime: 0.80,
+      emergency: -4.0,        // m/s² para EMERGENCIA
+      fwdTau: 0.30,           // s, filtro de aceleración longitudinal
+      vibTau: 0.25,           // s, energía de vibración
+      stillRms: 0.25,         // m/s² por debajo = quieto
+      stillTime: 1.0,         // s quieto para declarar PARADO
+      moveRms: 0.60,          // m/s² por encima = rodando
+      moveTime: 0.6,
+      startAccel: 0.8,        // m/s² positivos que cuentan como arranque
+      startTime: 0.3,
+      parkedTimeout: 600,     // s: tras 10 min parado, se apaga el aviso (bici aparcada)
+      recentMoveWindow: 30,   // s: solo hay PARADO si te estabas moviendo hace poco
+      gpsFresh: 3,            // s: antigüedad máxima de una velocidad GPS válida
+      flipSign: false
+    };
+    for (var k in opts) this.cfg[k] = opts[k];
+
+    this.calib = { u0: null, f: null };
+    this.calibState = 'none'; // none | rest | push | done | failed
+    this._cal = null;
+    this.reset();
+  }
+
+  Detector.prototype.reset = function () {
+    this.state = 0;
+    this.t = null;
+    this.gLP = null;          // paso bajo lento de m (pendiente)
+    this.gFast = null;        // paso bajo rápido de m (vibración)
+    this.fwdRaw = 0;
+    this.fwd = 0;             // aceleración longitudinal filtrada (m/s²), negativa = frenando
+    this.vib = 0;             // RMS de vibración (m/s²)
+    this.lastMoving = -1e9;
+    this.lastBrakeEnd = -1e9;
+    this.stillSince = null;
+    this.movingSince = null;
+    this.brakeSince = null;
+    this.releaseSince = null;
+    this.startSince = null;
+    this.stoppedAt = null;
+    this.gps = { speed: null, t: -1e9 };
+    this.events = [];
+  };
+
+  Detector.prototype.setGpsSpeed = function (t, speedMs) {
+    this.gps = { speed: speedMs, t: t };
+  };
+
+  Detector.prototype.isCalibrated = function () { return !!(this.calib.f && this.calib.u0); };
+
+  Detector.prototype.setCalibration = function (c) {
+    if (c && c.f && c.u0) { this.calib = { f: c.f.slice(), u0: c.u0.slice() }; this.calibState = 'done'; }
+  };
+
+  /* Calibración: 1) quieto en llano 1.5 s  2) arrancar pedaleando recto ~3 s. */
+  Detector.prototype.startCalibration = function () {
+    this.calibState = 'rest';
+    this._cal = { restSum: [0, 0, 0], restN: 0, restStart: null, u0: null, pushSum: [0, 0, 0], pushN: 0, pushStart: null, lastT: null, vibLP: null, vib: 0 };
+    this.calib = { u0: null, f: null };
+  };
+
+  Detector.prototype._calStep = function (t, m) {
+    var c = this._cal;
+    if (c.lastT === null) { c.lastT = t; c.vibLP = m.slice(); return; }
+    var dt = Math.max(1e-3, t - c.lastT); c.lastT = t;
+    var a = 1 - Math.exp(-dt / 1.0);
+    for (var i = 0; i < 3; i++) c.vibLP[i] += a * (m[i] - c.vibLP[i]);
+    var hp = sub(m, c.vibLP);
+    var av = 1 - Math.exp(-dt / 0.4);
+    c.vib += av * (dot(hp, hp) - c.vib);
+    var rms = Math.sqrt(Math.max(0, c.vib));
+
+    if (this.calibState === 'rest') {
+      if (rms > 0.35) { c.restStart = null; c.restSum = [0, 0, 0]; c.restN = 0; return; }
+      if (c.restStart === null) c.restStart = t;
+      for (var j = 0; j < 3; j++) c.restSum[j] += m[j];
+      c.restN++;
+      if (t - c.restStart >= 1.5 && c.restN > 20) {
+        var mean = scale(c.restSum, 1 / c.restN);
+        c.u0 = unit(mean);
+        this.calibState = 'push';
+      }
+    } else if (this.calibState === 'push') {
+      if (c.pushStart === null) {
+        if (rms > 0.6) { c.pushStart = t; }
+        else return;
+      }
+      // componente horizontal respecto a la vertical calibrada
+      var along = dot(m, c.u0);
+      var h = sub(m, scale(c.u0, along));
+      for (var k = 0; k < 3; k++) c.pushSum[k] += h[k];
+      c.pushN++;
+      if (t - c.pushStart >= 3.0) {
+        var meanH = scale(c.pushSum, 1 / c.pushN);
+        if (norm(meanH) < 0.3) { this.calibState = 'failed'; return; }
+        this.calib = { u0: c.u0, f: unit(meanH) };
+        this.calibState = 'done';
+      }
+    }
+  };
+
+  Detector.prototype._log = function (t, msg) {
+    this.events.push({ t: t, msg: msg });
+    if (this.events.length > 50) this.events.shift();
+  };
+
+  Detector.prototype._set = function (t, s, why) {
+    if (s !== this.state) {
+      this.state = s;
+      this._log(t, why);
+      return true;
+    }
+    return false;
+  };
+
+  /* Devuelve el estado de la luz (0..3). */
+  Detector.prototype.update = function (t, mx, my, mz) {
+    var m = [mx, my, mz];
+    var cfg = this.cfg;
+
+    if (this.calibState === 'rest' || this.calibState === 'push') {
+      this._calStep(t, m);
+      this.t = t;
+      return this.state;
+    }
+
+    var dt = this.t === null ? 0.016 : Math.max(1e-3, Math.min(0.2, t - this.t));
+    this.t = t;
+
+    // vibración (alta frecuencia, sin gravedad)
+    if (this.gLP === null) { this.gLP = m.slice(); this.gFast = m.slice(); }
+    var aG = 1 - Math.exp(-dt / 1.0);
+    var aGf = 1 - Math.exp(-dt / 0.3);
+    for (var i = 0; i < 3; i++) {
+      this.gLP[i] += aG * (m[i] - this.gLP[i]);
+      this.gFast[i] += aGf * (m[i] - this.gFast[i]);
+    }
+    var hp = sub(m, this.gFast);
+    var aV = 1 - Math.exp(-dt / cfg.vibTau);
+    this.vib += aV * (dot(hp, hp) - this.vib);
+    var rms = Math.sqrt(Math.max(0, this.vib));
+
+    if (!this.isCalibrated()) return this.state;
+
+    // aceleración longitudinal (fuerza específica sobre el eje delantero)
+    var sgn = cfg.flipSign ? -1 : 1;
+    this.fwdRaw = sgn * dot(m, this.calib.f);
+    var aF = 1 - Math.exp(-dt / cfg.fwdTau);
+    this.fwd += aF * (this.fwdRaw - this.fwd);
+
+    var gpsOk = this.gps.speed !== null && (t - this.gps.t) <= cfg.gpsFresh;
+    var gpsMoving = gpsOk && this.gps.speed > 2.0;
+    var gpsStill = gpsOk && this.gps.speed < 0.6;
+
+    var sens = cfg.sensitivity;
+    var still = rms < cfg.stillRms && !gpsMoving;
+    var moving = rms > cfg.moveRms || gpsMoving;
+    if (moving) this.lastMoving = t;
+
+    // ---- tiempos acumulados ----
+    if (still) { if (this.stillSince === null) this.stillSince = t; } else this.stillSince = null;
+    if (rms > cfg.moveRms) { if (this.movingSince === null) this.movingSince = t; } else this.movingSince = null;
+
+    var s0 = this.state;
+    var braking = this.fwd < cfg.brakeOn * sens;
+    var releasing = this.fwd > cfg.brakeOff * sens;
+    var emergency = this.fwd < cfg.emergency * sens;
+    var longStill = this.stillSince !== null && (t - this.stillSince) >= cfg.stillTime && (!gpsOk || gpsStill);
+    var rolling = this.movingSince !== null && (t - this.movingSince) >= cfg.moveTime;
+    var recentlyMoved = (t - this.lastMoving) <= cfg.recentMoveWindow + cfg.stillTime + 1;
+
+    if (this.fwd > cfg.startAccel) { if (this.startSince === null) this.startSince = t; } else this.startSince = null;
+    var starting = this.startSince !== null && (t - this.startSince) >= cfg.startTime;
+
+    switch (this.state) {
+      case 0: // RODANDO
+        if (braking && !longStill) {
+          if (this.brakeSince === null) this.brakeSince = t;
+          if (t - this.brakeSince >= cfg.brakeOnTime) {
+            this._set(t, emergency ? 3 : 1, emergency ? 'Frenada de emergencia' : 'Frenando');
+            this.brakeSince = null;
+          }
+        } else this.brakeSince = null;
+        if (this.state === 0 && longStill && recentlyMoved) {
+          this._set(t, 2, 'Parado (luz encendida)');
+          this.stoppedAt = t;
+        }
+        break;
+
+      case 1: // FRENANDO
+      case 3:
+        if (emergency && this.state === 1) this._set(t, 3, 'Frenada de emergencia');
+        if (longStill) {
+          this._set(t, 2, 'Parado (luz encendida)');
+          this.stoppedAt = t;
+          this.releaseSince = null;
+        } else if (releasing && rms > cfg.moveRms) {
+          // soltó el freno y sigue rodando
+          if (this.releaseSince === null) this.releaseSince = t;
+          if (t - this.releaseSince >= cfg.brakeOffTime) {
+            this._set(t, 0, 'Suelto el freno');
+            this.releaseSince = null;
+            this.lastBrakeEnd = t;
+          }
+        } else this.releaseSince = null;
+        break;
+
+      case 2: // PARADO
+        var movedLong = this.movingSince !== null && (t - this.movingSince) >= 1.5;
+        if ((rolling && starting) || movedLong || (rolling && gpsMoving)) {
+          this._set(t, 0, 'En marcha');
+        } else if (this.stoppedAt !== null && (t - this.stoppedAt) > cfg.parkedTimeout) {
+          this._set(t, 0, 'Bici aparcada, aviso apagado');
+        }
+        break;
+    }
+    return this.state;
+  };
+
+  var api = { Detector: Detector, G: G };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.BikeDetector = api;
+})(typeof window !== 'undefined' ? window : this);
+
+</script>
+<script>
+(function () {
+  'use strict';
+  var SVC = 'b1c10001-0c4d-4b83-9a6d-5d1a1e000001';
+  var CHR = 'b1c10002-0c4d-4b83-9a6d-5d1a1e000001';
+  var NAMES = ['Rodando', 'Frenando', 'Parado', 'Emergencia'];
+  var WHY = [
+    'Sin freno. Las rampas y las bajadas a rueda libre no cuentan.',
+    'Estás frenando: luz fuerte.',
+    'Parado: la luz sigue encendida hasta que arranques.',
+    'Frenada muy fuerte: destello rápido.'
+  ];
+  var SENS = [0.6, 0.8, 1.0, 1.25, 1.5];
+  var SENS_NAMES = ['muy alta', 'alta', 'media', 'baja', 'muy baja'];
+  var $ = function (id) { return document.getElementById(id); };
+  var now = function () { return performance.now() / 1000; };
+
+  var real = new BikeDetector.Detector();
+  var demoDet = null, demo = null;
+  var det = real;
+  var sensorsOn = false, sensorT0 = 0, lastSample = 0, nSamples = 0, hz = 0, hzT = 0;
+  var hist = [];
+  var lampState = 0, lampSince = 0;
+  var overrideState = null, overrideUntil = 0;
+
+  /* ---------- guardado ligero ---------- */
+  function save() {
+    try {
+      localStorage.setItem('luzfreno', JSON.stringify({
+        sens: +$('sens').value, flip: real.cfg.flipSign, pos: $('posMode').value,
+        calib: real.isCalibrated() ? real.calib : null
+      }));
+    } catch (e) {}
+  }
+  function load() {
+    try {
+      var s = JSON.parse(localStorage.getItem('luzfreno') || 'null');
+      if (!s) return;
+      $('sens').value = s.sens || 3;
+      if (s.pos) $('posMode').value = s.pos;
+      real.cfg.flipSign = !!s.flip;
+      if (s.calib) real.setCalibration(s.calib);
+    } catch (e) {}
+  }
+  function applySens() {
+    var i = +$('sens').value;
+    real.cfg.sensitivity = SENS[i - 1];
+    if (demoDet) demoDet.cfg.sensitivity = SENS[i - 1];
+    $('sensOut').textContent = SENS_NAMES[i - 1];
+  }
+  function applyFlip() {
+    var f = real.cfg.flipSign;
+    $('btnFlip').setAttribute('aria-pressed', f ? 'true' : 'false');
+    $('btnFlip').textContent = f ? 'Sí' : 'No';
+  }
+
+  /* ---------- Bluetooth ---------- */
+  var bleDevice = null, bleChar = null, writing = false, pending = null, lastSent = -1, lastSentAt = 0;
+  var wantBle = false;
+  function setBle(text, ok) {
+    var c = $('chipBle'); c.textContent = text;
+    c.className = 'chip' + (ok === true ? ' on' : ok === false ? ' bad' : '');
+  }
+  function note(msg) { var b = $('banner'); b.textContent = msg; b.hidden = !msg; }
+
+  async function openGatt() {
+    var srv = await bleDevice.gatt.connect();
+    var svc = await srv.getPrimaryService(SVC);
+    bleChar = await svc.getCharacteristic(CHR);
+    setBle('Luz: conectada', true);
+    pushLight(currentState(), true);
+  }
+  async function connectLight() {
+    if (!navigator.bluetooth) {
+      note('Este navegador no tiene Web Bluetooth. Usa Chrome en Android (en iPhone, el navegador Bluefy).');
+      return;
+    }
+    try {
+      setBle('Luz: buscando…');
+      bleDevice = await navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }] });
+      bleDevice.addEventListener('gattserverdisconnected', onDisc);
+      wantBle = true;
+      await openGatt();
+      note('');
+    } catch (e) {
+      setBle('Luz: sin conectar', false);
+      if (e && e.name !== 'NotFoundError') note('No se pudo conectar con la luz: ' + (e.message || e));
+    }
+  }
+  function onDisc() {
+    bleChar = null;
+    if (!wantBle) return;
+    setBle('Luz: reconectando…', false);
+    var tries = 0;
+    (function retry() {
+      if (!wantBle || bleChar) return;
+      tries++;
+      openGatt().catch(function () {
+        if (tries < 40) setTimeout(retry, 2000); else setBle('Luz: sin conexión', false);
+      });
+    })();
+  }
+  function pushLight(state, force) {
+    if (!bleChar) return;
+    var t = performance.now();
+    if (!force && state === lastSent && t - lastSentAt < 1000) return;   // latido cada 1 s
+    if (writing) { pending = state; return; }
+    writing = true; lastSent = state; lastSentAt = t;
+    var data = Uint8Array.of(state);
+    var p = bleChar.writeValueWithoutResponse ? bleChar.writeValueWithoutResponse(data) : bleChar.writeValue(data);
+    p.catch(function () {}).then(function () {
+      writing = false;
+      if (pending !== null) { var s = pending; pending = null; pushLight(s, true); }
+    });
+  }
+
+  /* ---------- sensores ---------- */
+  var wakeLock = null;
+  async function keepAwake() {
+    try { if (navigator.wakeLock) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+  document.addEventListener('visibilitychange', function () { if (!document.hidden && sensorsOn) keepAwake(); });
+
+  function onMotion(e) {
+    var a = e.accelerationIncludingGravity;
+    if (!a || a.x === null || demo) return;
+    var t = now();
+    lastSample = t; nSamples++;
+    var s = real.update(t, a.x, a.y, a.z);
+    if (!demo) record(t, real);
+    pushLight(currentState());
+  }
+  async function startSensors() {
+    if (typeof DeviceMotionEvent === 'undefined') { note('Este dispositivo no ofrece sensores de movimiento.'); return; }
+    try {
+      if (typeof DeviceMotionEvent.requestPermission === 'function') {
+        var r = await DeviceMotionEvent.requestPermission();
+        if (r !== 'granted') { note('Permiso de sensores denegado. Actívalo en los ajustes del navegador.'); return; }
+      }
+    } catch (e) { note('No se pudo pedir permiso a los sensores: ' + e.message); return; }
+    if (!sensorsOn) window.addEventListener('devicemotion', onMotion);
+    sensorsOn = true; sensorT0 = now(); hzT = now(); nSamples = 0;
+    $('btnSensors').textContent = 'Sensores activos';
+    $('btnSensors').setAttribute('aria-pressed', 'true');
+    keepAwake();
+    startGps();
+    note('');
+  }
+  var gpsId = null;
+  function startGps() {
+    if (gpsId !== null || !navigator.geolocation) return;
+    try {
+      gpsId = navigator.geolocation.watchPosition(function (p) {
+        var v = p.coords.speed;
+        if (v !== null && v !== undefined && !isNaN(v)) real.setGpsSpeed(now(), v);
+      }, function () {}, { enableHighAccuracy: true, maximumAge: 1000 });
+    } catch (e) {}
+  }
+
+  /* ---------- calibración ---------- */
+  function calibText(d) {
+    switch (d.calibState) {
+      case 'rest': return ['Paso 1 de 2: pon la bici quieta, en llano y con el móvil ya fijado. No te muevas 2 segundos.', false];
+      case 'push': return ['Paso 2 de 2: arranca pedaleando recto, sin soltar el manillar, durante unos 3 segundos.', false];
+      case 'failed': return ['No noté el arranque. Vuelve a pulsar Calibrar y acelera de forma clara en línea recta.', false];
+      case 'done': return ['Calibrado. Si cambias el móvil de sitio o de ángulo, vuelve a calibrar. Si el freno sale al revés, usa “Invertir sentido”.', true];
+      default: return ['Sin calibrar. Con el móvil ya fijado al manillar, pulsa Calibrar.', false];
+    }
+  }
+  var lastCalState = '';
+  function showCalib() {
+    if (demo) return;
+    var st = real.calibState;
+    if (st === lastCalState) return;
+    lastCalState = st;
+    var c = calibText(real);
+    $('calib').textContent = c[0];
+    $('calib').className = 'calib' + (c[1] ? ' done' : '');
+    if (st === 'done') save();
+  }
+
+  /* ---------- estado, lámpara y gráfica ---------- */
+  function currentState() {
+    if (overrideState !== null && now() < overrideUntil) return overrideState;
+    return det.state;
+  }
+  function record(t, d) {
+    hist.push({ t: t, f: d.fwd, s: d.state, thr: d.cfg.brakeOn * d.cfg.sensitivity });
+    while (hist.length && t - hist[0].t > 12.5) hist.shift();
+  }
+  function lampLevel(s, since) {
+    if (s === 0) return 0.22;
+    if (s === 1) return since < 0.6 ? (Math.floor(since / 0.1) % 2 === 0 ? 1 : 0.15) : 1;
+    if (s === 2) return 1;
+    return Math.floor(since / 0.1) % 2 === 0 ? 1 : 0.1;
+  }
+  var rearMode = false, reCalTimer = null;
+  function rearLevel(s, since, t) {
+    if (s === 0) {
+      var p = $('posMode').value;
+      if (p === 'off') return 0.0;
+      if (p === 'flash') return (t % 1) < 0.14 ? 0.9 : 0.04;
+      return 0.4;
+    }
+    return lampLevel(s, since);
+  }
+  var cv = $('cv'), ctx = cv.getContext('2d');
+  var COL = { 0: '#3ecf8e', 1: '#ff4a3a', 2: '#f6b93b', 3: '#ff4a3a' };
+  function draw() {
+    var dpr = window.devicePixelRatio || 1;
+    var w = cv.clientWidth, h = cv.clientHeight;
+    if (cv.width !== Math.round(w * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    var yMin = -5, yMax = 3, padL = 28;
+    var Y = function (v) { return h * (yMax - Math.max(yMin, Math.min(yMax, v))) / (yMax - yMin); };
+    ctx.font = '11px system-ui, sans-serif';
+    ctx.fillStyle = '#8d96a3'; ctx.strokeStyle = '#272c34'; ctx.lineWidth = 1;
+    [-4, -2, 0, 2].forEach(function (v) {
+      ctx.beginPath(); ctx.moveTo(padL, Y(v)); ctx.lineTo(w, Y(v)); ctx.stroke();
+      ctx.fillText(String(v), 2, Y(v) + 4);
+    });
+    if (hist.length < 2) return;
+    var tEnd = hist[hist.length - 1].t, X = function (t) { return padL + (w - padL) * (1 - (tEnd - t) / 12); };
+    // bandas por estado
+    for (var i = 1; i < hist.length; i++) {
+      var s = hist[i].s;
+      if (s === 0) continue;
+      ctx.fillStyle = s === 2 ? 'rgba(246,185,59,.16)' : 'rgba(255,74,58,.22)';
+      ctx.fillRect(X(hist[i - 1].t), 0, Math.max(1, X(hist[i].t) - X(hist[i - 1].t)), h);
+    }
+    // umbral
+    ctx.setLineDash([5, 4]); ctx.strokeStyle = '#ff4a3a'; ctx.beginPath();
+    var thr = hist[hist.length - 1].thr; ctx.moveTo(padL, Y(thr)); ctx.lineTo(w, Y(thr)); ctx.stroke(); ctx.setLineDash([]);
+    // curva
+    ctx.strokeStyle = '#e9ecf0'; ctx.lineWidth = 2; ctx.beginPath();
+    hist.forEach(function (p, k) { if (k === 0) ctx.moveTo(X(p.t), Y(p.f)); else ctx.lineTo(X(p.t), Y(p.f)); });
+    ctx.stroke();
+    var last = hist[hist.length - 1];
+    ctx.fillStyle = COL[last.s]; ctx.beginPath(); ctx.arc(X(last.t), Y(last.f), 4, 0, 6.3); ctx.fill();
+  }
+  function fmtT(t) {
+    var s = Math.max(0, Math.round(t - (demo ? 0 : sensorT0)));
+    return ('0' + Math.floor(s / 60)).slice(-2) + ':' + ('0' + s % 60).slice(-2);
+  }
+  var lastLogKey = '';
+  function ui() {
+    var t = now();
+    var s = currentState();
+    if (s !== lampState) { lampState = s; lampSince = t; }
+    var lv = lampLevel(s, t - lampSince);
+    var lamp = $('lamp');
+    lamp.style.background = 'rgb(' + Math.round(58 + 197 * lv) + ',' + Math.round(21 + 53 * lv) + ',' + Math.round(18 + 40 * lv) + ')';
+    lamp.style.boxShadow = 'inset 0 0 0 3px #00000040, 0 0 ' + Math.round(46 * lv) + 'px rgba(255,74,58,' + (0.75 * lv).toFixed(2) + ')';
+
+    var hasData = demo || (sensorsOn && t - lastSample < 1.5);
+    var okCal = det.isCalibrated();
+    var st = $('state');
+    if (!hasData && overrideState === null) { st.textContent = sensorsOn ? 'Sin señal' : 'Sin datos'; st.dataset.s = '0'; }
+    else if (!okCal && !demo) { st.textContent = 'Sin calibrar'; st.dataset.s = '0'; $('why').textContent = 'Calibra para saber hacia dónde va la bici.'; }
+    else { st.textContent = NAMES[s]; st.dataset.s = String(s); $('why').textContent = WHY[s]; }
+
+    if (!$('screenLight').hidden) {
+      var sl = $('screenLight');
+      var lvO = lv, msg = '', big = '', small = '';
+      if (rearMode) {
+        var noCal = !demo && !det.isCalibrated();
+        var noSig = !demo && !noCal && !(sensorsOn && t - lastSample < 1.5);
+        if (noCal) {
+          msg = calibText(real)[0]; lvO = 0.12;
+          if (real.calibState === 'failed' && !reCalTimer) reCalTimer = setTimeout(function () { reCalTimer = null; real.startCalibration(); }, 2500);
+        } else if (noSig) {
+          msg = 'Sin datos de los sensores. Revisa que la pantalla siga encendida.'; lvO = (t % 1) < 0.5 ? 0.7 : 0.15;
+        } else lvO = rearLevel(s, t - lampSince, t);
+      } else {
+        big = st.textContent;
+        var fv = det.fwd.toFixed(1); if (fv === '-0.0') fv = '0.0';
+        small = fv + ' m/s²  ·  freno por debajo de ' + (det.cfg.brakeOn * det.cfg.sensitivity).toFixed(1);
+        msg = (hasData && (okCal || demo)) ? '' : $('why').textContent;
+      }
+      sl.style.background = 'rgb(' + Math.round(10 + 245 * lvO) + ',' + Math.round(2 + 38 * lvO) + ',' + Math.round(2 + 26 * lvO) + ')';
+      $('slState').textContent = big;
+      $('slSub').textContent = msg;
+      $('slFwd').textContent = small;
+    }
+    var fs = det.fwd.toFixed(1); $('mFwd').textContent = fs === '-0.0' ? '0.0' : fs;
+    $('mVib').textContent = (Math.sqrt(Math.max(0, det.vib))).toFixed(2);
+    var g = det.gps;
+    $('mGps').textContent = (g.speed !== null && t - g.t < 3) ? (g.speed * 3.6).toFixed(0) : '–';
+
+    if (sensorsOn && !demo) {
+      if (t - hzT >= 1) { hz = Math.round(nSamples / (t - hzT)); nSamples = 0; hzT = t; }
+      var live = t - lastSample < 1.5;
+      $('chipSensor').textContent = live ? 'Sensores: ' + hz + ' Hz' : 'Sensores: sin señal';
+      $('chipSensor').className = 'chip ' + (live ? 'on' : 'bad');
+      if (!live && t - sensorT0 > 3) note('No llegan datos de los sensores. Abre la página en Chrome (no en una vista incrustada) y mantén la pantalla encendida.');
+    }
+    // registro
+    var ev = det.events.slice(-6).reverse();
+    var key = ev.length + ':' + (ev[0] ? ev[0].t : 0) + (demo ? 'd' : 'r');
+    if (key !== lastLogKey) {
+      lastLogKey = key;
+      var ul = $('log'); ul.textContent = '';
+      if (!ev.length) { var li0 = document.createElement('li'); li0.innerHTML = '<time>--:--</time><span>Todavía no hay eventos.</span>'; ul.appendChild(li0); }
+      ev.forEach(function (e) {
+        var li = document.createElement('li');
+        var tm = document.createElement('time'); tm.textContent = fmtT(e.t);
+        var sp = document.createElement('span'); sp.textContent = e.msg;
+        li.appendChild(tm); li.appendChild(sp); ul.appendChild(li);
+      });
+    }
+    showCalib();
+    draw();
+    requestAnimationFrame(ui);
+  }
+
+  /* ---------- demo (simulación, no usa sensores) ---------- */
+  var G = 9.80665, slope10 = Math.atan(0.10);
+  var PH = [
+    ['Rodando en llano. Hay un bache: no cuenta como freno.', 5, 0, 0, 0.8, 3.0],
+    ['Frenas en llano hasta parar.', 4.2, -2.5, 0, 0],
+    ['Parado en un semáforo: la luz se queda encendida.', 6, 'hold', 0, 0],
+    ['Arrancas.', 3.5, 1.5, 0, 0.8],
+    ['Subes una rampa del 10 % pedaleando.', 4, 1.2, slope10, 1.3],
+    ['Rampa a rueda libre: frenas por la gravedad, pero no es freno.', 3, -0.15, slope10, 0],
+    ['Frenas en la rampa hasta parar.', 4, -2.0, slope10, 0],
+    ['Parado en la rampa.', 4, 'hold', slope10, 0],
+    ['Arrancas en la rampa.', 4, 2.8, slope10, 1.3]
+  ];
+  function gauss() { return Math.sqrt(-2 * Math.log(Math.random() + 1e-12)) * Math.cos(6.2832 * Math.random()); }
+  function makeDemo() {
+    return { pi: 0, pt: 0, t: 0, v: 6, label: PH[0][0], done: false };
+  }
+  function demoStep(d) {
+    var dt = 1 / 60, ph = PH[d.pi], th = ph[3];
+    var F = ph[2] === 'hold' ? G * Math.sin(th) : ph[2];
+    if (d.v > 1) F += ph[4] * Math.sin(6.2832 * 2.4 * d.t);
+    if (ph[5] !== undefined && d.pt > ph[5] && d.pt < ph[5] + 0.12) F -= 7;
+    var a = F - G * Math.sin(th);
+    if (d.v <= 0 && a < 0) { d.v = 0; F = G * Math.sin(th); } else d.v = Math.max(0, d.v + a * dt);
+    var sv = d.v > 0.3 ? Math.min(1, d.v / 3) : 0;
+    var m = [F + gauss() * (0.03 + 0.5 * sv), gauss() * (0.03 + 0.5 * sv), G * Math.cos(th) + gauss() * (0.03 + sv)];
+    d.t += dt; d.pt += dt;
+    if (d.pt >= ph[1]) { d.pi++; d.pt = 0; if (d.pi >= PH.length) { d.done = true; d.pi = PH.length - 1; } else d.label = PH[d.pi][0]; }
+    return m;
+  }
+  var demoRaf = 0, demoLast = 0;
+  function startDemo() {
+    stopDemo(true);
+    demoDet = new BikeDetector.Detector({ sensitivity: SENS[+$('sens').value - 1] });
+    demoDet.setCalibration({ f: [1, 0, 0], u0: [0, 0, 1] });
+    demo = makeDemo(); det = demoDet; hist.length = 0; lastLogKey = '';
+    $('btnDemo').textContent = 'Parar demo';
+    $('calib').className = 'calib done'; $('calib').textContent = demo.label;
+    demoLast = now();
+    (function loop() {
+      if (!demo) return;
+      var t = now(), n = Math.min(40, Math.round((t - demoLast) * 60 * 3));   // 3x más rápido
+      if (n > 0) demoLast = t;
+      for (var i = 0; i < n && !demo.done; i++) {
+        var m = demoStep(demo);
+        demoDet.update(demo.t, m[0], m[1], m[2]);
+        if (i % 2 === 0) record(demo.t, demoDet);
+      }
+      $('calib').textContent = demo.done ? 'Fin de la demo.' : demo.label;
+      pushLight(currentState());
+      demoRaf = requestAnimationFrame(loop);
+    })();
+  }
+  function stopDemo(silent) {
+    if (!demo) return;
+    demo = null; det = real; cancelAnimationFrame(demoRaf);
+    hist.length = 0; lastLogKey = ''; lastCalState = '';
+    $('btnDemo').textContent = 'Ver demo';
+  }
+
+  /* ---------- eventos de la interfaz ---------- */
+  $('btnBle').addEventListener('click', connectLight);
+  $('btnSensors').addEventListener('click', startSensors);
+  $('btnCalib').addEventListener('click', async function () {
+    if (demo) stopDemo();
+    if (!sensorsOn) await startSensors();
+    if (!sensorsOn) return;
+    real.startCalibration(); lastCalState = '';
+  });
+  $('btnDemo').addEventListener('click', function () { demo ? stopDemo() : startDemo(); });
+  $('btnFlip').addEventListener('click', function () { real.cfg.flipSign = !real.cfg.flipSign; applyFlip(); save(); });
+  $('sens').addEventListener('input', function () { applySens(); save(); });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-test]'), function (b) {
+    b.addEventListener('click', function () {
+      overrideState = +b.dataset.test; overrideUntil = now() + 3;
+      pushLight(overrideState, true);
+    });
+  });
+
+  function openOverlay(rear) {
+    rearMode = rear;
+    $('slExit').textContent = rear ? 'Mantén pulsado para salir' : 'Volver';
+    $('screenLight').hidden = false;
+    try { var el = document.documentElement; if (el.requestFullscreen) el.requestFullscreen().catch(function () {}); } catch (e) {}
+    keepAwake();
+  }
+  function closeOverlay() {
+    $('screenLight').hidden = true; rearMode = false;
+    clearTimeout(reCalTimer); reCalTimer = null;
+    try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen(); } catch (e) {}
+  }
+  $('btnScreen').addEventListener('click', function () { openOverlay(false); });
+  $('btnRear').addEventListener('click', async function () {
+    if (demo) stopDemo();
+    if (!sensorsOn) await startSensors();
+    if (!sensorsOn) return;
+    if (!real.isCalibrated() && real.calibState !== 'rest' && real.calibState !== 'push') { real.startCalibration(); lastCalState = ''; }
+    openOverlay(true);
+  });
+  var holdT = null;
+  $('slExit').addEventListener('pointerdown', function () {
+    if (!rearMode) { closeOverlay(); return; }
+    holdT = setTimeout(closeOverlay, 1200);
+  });
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) { $('slExit').addEventListener(ev, function () { clearTimeout(holdT); }); });
+  $('slExit').addEventListener('click', function (e) { if (e.detail === 0) closeOverlay(); });   // teclado
+  $('posMode').addEventListener('change', save);
+
+  load(); applySens(); applyFlip();
+  if (!navigator.bluetooth) note('Este navegador no tiene Web Bluetooth. Para conectar la luz usa Chrome en Android. La demo funciona en cualquier navegador.');
+  requestAnimationFrame(ui);
+  if ('serviceWorker' in navigator && location.protocol.indexOf('http') === 0) navigator.serviceWorker.register('sw.js').catch(function () {});
+})();
+</script>
+</body>
+</html>
