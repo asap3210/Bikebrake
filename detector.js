@@ -1,9 +1,14 @@
 /* Detector de frenada para bici.
  *
- * Idea clave: el acelerómetro mide "fuerza específica" (todo lo que NO es gravedad).
- * Proyectada sobre el eje delantero de la bici, esa fuerza es ~0 cuando ruedas libre,
- * tanto en llano como en rampa o en bajada (la gravedad no se mide, la rampa no
- * cuenta como frenada). Solo el freno (o el viento/rodadura, muy poco) la hace negativa.
+ * Idea clave: el acelerómetro mide "fuerza específica" (aceleración real menos gravedad).
+ * Proyectada sobre el eje delantero de la bici: fwd = a_real + g·sen(pendiente).
+ * A rueda libre da ~0 en llano, en rampa o en bajada (la rampa no cuenta como frenada);
+ * solo el freno la hace claramente negativa.
+ *
+ * Pendiente: a velocidad constante fwd = g·sen(pendiente), así que
+ *   pendiente ≈ (fwd lento − aceleración medida por GPS) / g
+ * (sin GPS se supone velocidad constante). Es la pendiente respecto al sitio donde
+ * calibraste; "setLevel()" la pone a 0 en una calle llana y corrige el desfase.
  *
  * Estados de la luz:
  *   0 RODANDO   luz tenue
@@ -29,12 +34,16 @@
     opts = opts || {};
     this.cfg = {
       sensitivity: 1.0,       // multiplica los umbrales (menor = más sensible)
-      brakeOn: -1.1,          // m/s² filtrados para entrar en FRENANDO
-      brakeOff: -0.5,         // m/s² para salir
-      brakeOnTime: 0.30,      // s sostenidos para confirmar (filtra baches)
+      brakeOn: -0.7,          // m/s² filtrados para entrar en FRENANDO
+      brakeOff: -0.3,         // m/s² para salir
+      brakeOnTime: 0.35,      // s acumulados bajo el umbral para confirmar (filtra baches)
       brakeOffTime: 0.80,
       emergency: -4.0,        // m/s² para EMERGENCIA
-      fwdTau: 0.30,           // s, filtro de aceleración longitudinal
+      fwdTau: 0.20,           // s, filtro de aceleración longitudinal
+      medianWin: 0.22,        // s, ventana de mediana (quita baches de <0.1 s)
+      slopeTau: 2.5,          // s, filtro lento para estimar la pendiente
+      gpsAccTau: 1.5,         // s, filtro de la aceleración medida por GPS
+      trim: 0,                // m/s² de desfase del eje (se aprende con setLevel)
       vibTau: 0.25,           // s, energía de vibración
       stillRms: 0.25,         // m/s² por debajo = quieto
       stillTime: 1.0,         // s quieto para declarar PARADO
@@ -61,7 +70,21 @@
     this.gLP = null;          // paso bajo lento de m (pendiente)
     this.gFast = null;        // paso bajo rápido de m (vibración)
     this.fwdRaw = 0;
-    this.fwd = 0;             // aceleración longitudinal filtrada (m/s²), negativa = frenando
+    this.fwd = 0;             // aceleración longitudinal filtrada y corregida (m/s²), negativa = frenando
+    this.slopeInit = false;
+    this.warmT0 = null;
+    this.fwdInit = false;
+    this.fwdMid = 0;          // fwd a escala de ~1 s y a escala de ~4 s: detectan cambios
+    this.fwdLong = 0;
+    this.aSlow = 0;
+    this.medBuf = [];
+    this.slopeSin = 0;        // seno de la pendiente estimada
+    this.slopePct = 0;        // pendiente en %
+    this.slopeSrc = 'none';   // none | gps | imu
+    this.aGps = 0;            // aceleración por GPS, suavizada (m/s²)
+    this._aUse = 0;
+    this._gpsPrev = null;
+    this.brakeAcc = 0;
     this.vib = 0;             // RMS de vibración (m/s²)
     this.lastMoving = -1e9;
     this.lastBrakeEnd = -1e9;
@@ -76,7 +99,24 @@
   };
 
   Detector.prototype.setGpsSpeed = function (t, speedMs) {
+    var p = this._gpsPrev;
+    if (p && t - p.t >= 0.4 && t - p.t <= 2.5) {
+      var a = Math.max(-6, Math.min(6, (speedMs - p.v) / (t - p.t)));
+      this.aGps += (1 - Math.exp(-(t - p.t) / this.cfg.gpsAccTau)) * (a - this.aGps);
+      this.aSlow += (1 - Math.exp(-(t - p.t) / 2.5)) * (a - this.aSlow);
+    } else if (!p || t - p.t > 5) { this.aGps = 0; this.aSlow = 0; }
+    if (!p || t - p.t >= 0.4) this._gpsPrev = { t: t, v: speedMs };
     this.gps = { speed: speedMs, t: t };
+  };
+
+  /* Pone la pendiente actual a 0 (calle llana) y corrige el desfase del eje. */
+  Detector.prototype.setLevel = function () {
+    if (!this.isCalibrated() || !this.slopeInit) return false;
+    var nt = Math.max(-1.5, Math.min(1.5, this.cfg.trim + G * this.slopeSin));
+    this.fwd -= nt - this.cfg.trim;
+    this.cfg.trim = nt;
+    this._log(this.t, 'Pendiente puesta a 0');
+    return true;
   };
 
   Detector.prototype.isCalibrated = function () { return !!(this.calib.f && this.calib.u0); };
@@ -90,6 +130,8 @@
     this.calibState = 'rest';
     this._cal = { restSum: [0, 0, 0], restN: 0, restStart: null, u0: null, pushSum: [0, 0, 0], pushN: 0, pushStart: null, lastT: null, vibLP: null, vib: 0 };
     this.calib = { u0: null, f: null };
+    this.cfg.trim = 0;
+    this.slopeInit = false; this.warmT0 = null;
   };
 
   Detector.prototype._calStep = function (t, m) {
@@ -178,12 +220,37 @@
     // aceleración longitudinal (fuerza específica sobre el eje delantero)
     var sgn = cfg.flipSign ? -1 : 1;
     this.fwdRaw = sgn * dot(m, this.calib.f);
+    // mediana corta: un bache (<0.1 s) no puede parecer una frenada
+    var buf = this.medBuf;
+    buf.push({ t: t, v: this.fwdRaw });
+    while (buf.length > 1 && t - buf[0].t > cfg.medianWin) buf.shift();
+    var srt = buf.map(function (x) { return x.v; }).sort(function (a, b) { return a - b; });
+    var med = srt[srt.length >> 1];
+    if (!this.fwdInit) { this.fwd = this.fwdMid = this.fwdLong = med; this.fwdInit = true; }
+    this.fwdMid += (1 - Math.exp(-dt / 1.0)) * (med - this.fwdMid);
+    this.fwdLong += (1 - Math.exp(-dt / 4.0)) * (med - this.fwdLong);
     var aF = 1 - Math.exp(-dt / cfg.fwdTau);
-    this.fwd += aF * (this.fwdRaw - this.fwd);
+    this.fwd += aF * ((med - cfg.trim) - this.fwd);
 
     var gpsOk = this.gps.speed !== null && (t - this.gps.t) <= cfg.gpsFresh;
     var gpsMoving = gpsOk && this.gps.speed > 2.0;
     var gpsStill = gpsOk && this.gps.speed < 0.6;
+
+    // pendiente: fwd menos la aceleración real medida por GPS, promediado despacio.
+    // Si la velocidad cambia deprisa (pedaleo fuerte, frenada) se congela: el GPS llega
+    // con retraso y falsearía el cálculo.
+    this._aUse = (gpsOk && !gpsStill) ? this.aGps : 0;
+    this.slopeSrc = gpsOk ? 'gps' : 'imu';
+    var steady = Math.abs(this.fwdMid - this.fwdLong) < 0.5 &&
+      (!(gpsOk && !gpsStill) || Math.abs(this.aGps - this.aSlow) < 0.4);
+    var x = (med - cfg.trim - this._aUse) / G;
+    if (this.warmT0 === null) this.warmT0 = t;
+    if (steady && t - this.warmT0 > 3) {
+      if (!this.slopeInit) { this.slopeSin = x; this.slopeInit = true; }
+      else this.slopeSin += (1 - Math.exp(-dt / cfg.slopeTau)) * (x - this.slopeSin);
+    }
+    var sc = Math.max(-0.3, Math.min(0.3, this.slopeSin));
+    this.slopePct = 100 * sc / Math.sqrt(1 - sc * sc);
 
     var sens = cfg.sensitivity;
     var still = rms < cfg.stillRms && !gpsMoving;
@@ -197,7 +264,7 @@
     var s0 = this.state;
     var braking = this.fwd < cfg.brakeOn * sens;
     var releasing = this.fwd > cfg.brakeOff * sens;
-    var emergency = this.fwd < cfg.emergency * sens;
+    var emergency = this.fwd < cfg.emergency * Math.max(sens, 0.85); // no tan sensible como el freno normal
     var longStill = this.stillSince !== null && (t - this.stillSince) >= cfg.stillTime && (!gpsOk || gpsStill);
     var rolling = this.movingSince !== null && (t - this.movingSince) >= cfg.moveTime;
     var recentlyMoved = (t - this.lastMoving) <= cfg.recentMoveWindow + cfg.stillTime + 1;
@@ -207,13 +274,13 @@
 
     switch (this.state) {
       case 0: // RODANDO
-        if (braking && !longStill) {
-          if (this.brakeSince === null) this.brakeSince = t;
-          if (t - this.brakeSince >= cfg.brakeOnTime) {
-            this._set(t, emergency ? 3 : 1, emergency ? 'Frenada de emergencia' : 'Frenando');
-            this.brakeSince = null;
-          }
-        } else this.brakeSince = null;
+        // acumulador con fuga: el ruido del pedaleo no reinicia la cuenta
+        if (braking && !longStill) this.brakeAcc += dt;
+        else this.brakeAcc = Math.max(0, this.brakeAcc - 1.5 * dt);
+        if (this.brakeAcc >= cfg.brakeOnTime) {
+          this._set(t, emergency ? 3 : 1, emergency ? 'Frenada de emergencia' : 'Frenando');
+          this.brakeAcc = 0;
+        }
         if (this.state === 0 && longStill && recentlyMoved) {
           this._set(t, 2, 'Parado (luz encendida)');
           this.stoppedAt = t;
