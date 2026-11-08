@@ -1074,7 +1074,14 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
   load(); applySens(); applyFlip();
   if (!navigator.bluetooth) note('Este navegador no tiene Web Bluetooth. Para conectar la luz usa Chrome en Android. La demo funciona en cualquier navegador.');
   requestAnimationFrame(ui);
-  if ('serviceWorker' in navigator && location.protocol.indexOf('http') === 0) navigator.serviceWorker.register('sw.js').catch(function () {});
+  if ('serviceWorker' in navigator && location.protocol.indexOf('http') === 0) {
+    var hadSw = !!navigator.serviceWorker.controller, reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      // versión nueva activada: recarga una vez, salvo que estés usando sensores o la luz
+      if (hadSw && !reloaded && !sensorsOn && !demo) { reloaded = true; location.reload(); }
+    });
+    navigator.serviceWorker.register('sw.js').catch(function () {});
+  }
 })();
 </script>
 </body>
