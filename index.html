@@ -84,6 +84,41 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
 .screenlight .sl-fwd { color: #ffffffd9; font-size: 1.1rem; font-variant-numeric: tabular-nums; text-shadow: 0 1px 8px #0008; text-align: center; }
 .screenlight button { position: absolute; bottom: max(24px, env(safe-area-inset-bottom)); background: #00000066; border-color: #ffffff55; color: #fff; min-width: 160px; }
 @media (prefers-reduced-motion: reduce) { .lamp { transition: none; } }
+
+/* Tutorial discreto: botón «?» pequeño y hoja inferior con animaciones */
+.help { width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--line); background: transparent; color: var(--muted); font-size: .8rem; font-weight: 700; min-height: 0; padding: 0; line-height: 1; position: relative; }
+.help.new::after { content: ""; position: absolute; top: -2px; right: -2px; width: 8px; height: 8px; border-radius: 50%; background: var(--brake); }
+.tut { position: fixed; inset: 0; z-index: 30; background: #000a; display: flex; align-items: flex-end; justify-content: center; }
+.tut-card { width: 100%; max-width: 560px; background: var(--panel); border: 1px solid var(--line); border-radius: 18px 18px 0 0; padding: 14px 16px max(18px, env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 10px; }
+.tut-scene { background: #0b0d10; border-radius: 12px; border: 1px solid var(--line); }
+.tut-scene svg { display: block; width: 100%; height: auto; }
+.tut h3 { margin: 0; font-size: 1rem; }
+.tut p { margin: 0; color: var(--muted); font-size: .9rem; line-height: 1.45; min-height: 4.4em; }
+.tut-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.tut-nav button { min-height: 40px; font-size: .9rem; }
+.dots { display: flex; gap: 6px; }
+.dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--line); }
+.dots i.on { background: var(--text); }
+.tut svg .st { stroke: #aab3c0; stroke-width: 3; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.tut svg .fl { fill: #1e232a; stroke: #aab3c0; stroke-width: 2; }
+.tut svg text { font: 600 11px var(--font); fill: #e9ecf0; }
+.a-drop { animation: drop 3s ease-in-out infinite; }
+@keyframes drop { 0%, 15% { transform: translateY(-34px); opacity: 0; } 40%, 85% { transform: none; opacity: 1; } 100% { opacity: 0; } }
+.a-pulse { animation: pulse 1.4s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.12); opacity: .6; } }
+.a-ride { animation: ride 6s ease-in-out infinite; }
+@keyframes ride { 0%, 35% { transform: none; } 90%, 100% { transform: translateX(46px); } }
+.a-t1 { animation: t1 6s infinite; } .a-t2 { animation: t2 6s infinite; }
+@keyframes t1 { 0%, 33% { opacity: 1; } 40%, 100% { opacity: 0; } }
+@keyframes t2 { 0%, 36% { opacity: 0; } 45%, 100% { opacity: 1; } }
+.a-level { animation: level 5s ease-in-out infinite; transform-origin: 120px 95px; }
+@keyframes level { 0%, 25% { transform: rotate(-7deg); } 60%, 100% { transform: none; } }
+.a-n1 { animation: t1 5s infinite; } .a-n2 { animation: t2 5s infinite; }
+.a-blink { animation: blink 1s steps(1) infinite; }
+@keyframes blink { 0% { opacity: 1; } 50% { opacity: .15; } }
+.a-glow { animation: glow 2.4s ease-in-out infinite; }
+@keyframes glow { 0%, 30% { fill: #5a1a14; } 40%, 80% { fill: #ff4a3a; } 100% { fill: #5a1a14; } }
+@media (prefers-reduced-motion: reduce) { .tut svg * { animation: none !important; opacity: 1 !important; transform: none !important; } .a-t2, .a-n2 { display: none; } }
 </style>
 </head>
 <body>
@@ -93,6 +128,7 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
     <div class="chips">
       <span class="chip" id="chipSensor">Sensores: apagados</span>
       <span class="chip" id="chipBle">Luz: sin conectar</span>
+      <button class="help" id="btnHelp" aria-label="Cómo se usa">?</button>
     </div>
   </header>
 
@@ -165,6 +201,20 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
   <p class="note"><b>Móvil viejo como luz trasera:</b> abre esta página en él, pulsa «Modo luz trasera» (la primera vez te guía para calibrar), pon el brillo al máximo y fíjalo al sillín o al portabultos con la pantalla hacia atrás. Detecta el frenado con sus propios sensores. Para salir, mantén pulsado «Salir».</p>
   <p class="note">Esta app complementa, no sustituye, una luz trasera homologada. Mantén la pantalla encendida y baja el brillo al mínimo: si el móvil duerme, Chrome deja de enviar datos de los sensores.</p>
 </main>
+
+
+<div class="tut" id="tut" hidden role="dialog" aria-modal="true" aria-labelledby="tutTitle">
+  <div class="tut-card">
+    <div class="tut-scene" id="tutScene"></div>
+    <h3 id="tutTitle"></h3>
+    <p id="tutText"></p>
+    <div class="tut-nav">
+      <button id="tutBack">Atrás</button>
+      <div class="dots" id="tutDots"></div>
+      <button id="tutNext" class="primary">Siguiente</button>
+    </div>
+  </div>
+</div>
 
 <div class="screenlight" id="screenLight" hidden aria-live="polite">
   <div class="sl-state" id="slState">Rodando</div>
@@ -987,6 +1037,39 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
   $('slExit').addEventListener('click', function (e) { if (e.detail === 0) closeOverlay(); });   // teclado
   $('posMode').addEventListener('change', save);
   $('torchMode').addEventListener('change', function () { if ($('torchMode').value === 'brake') enableTorch(); else { disableTorch(); note(''); } });
+
+  /* ---------- tutorial ---------- */
+  var BIKE = '<circle class="st" cx="80" cy="78" r="16"/><circle class="st" cx="160" cy="78" r="16"/><path class="st" d="M80 78 L110 78 L132 48 L150 48 M110 78 L124 56 M132 48 L160 78 M104 48 L116 48"/>';
+  var PHONE = '<rect class="fl" x="141" y="30" width="14" height="22" rx="3"/>';
+  var TUT = [
+    { t: '1. Fija el móvil', x: 'Sujétalo al manillar con la pantalla hacia ti y bien firme. Mantén la pantalla encendida y con poco brillo: si el móvil duerme, dejan de llegar datos.',
+      s: '<line class="st" x1="20" y1="95" x2="220" y2="95"/>' + BIKE + '<g class="a-drop">' + PHONE + '</g>' },
+    { t: '2. Inicia los sensores', x: 'Pulsa «Iniciar sensores» y acepta el permiso de ubicación: da la velocidad por GPS. Arriba debe aparecer «Sensores: 60 Hz».',
+      s: '<rect class="fl" x="90" y="8" width="60" height="94" rx="9"/><rect class="a-pulse" x="98" y="62" width="44" height="16" rx="6" fill="#3ecf8e22" stroke="#3ecf8e" stroke-width="2"/><text x="120" y="73" text-anchor="middle" style="font-size:7px">Sensores</text><text class="a-blink" x="120" y="30" text-anchor="middle" style="fill:#3ecf8e">60 Hz</text>' },
+    { t: '3. Calibra', x: 'Con la bici quieta y en llano, pulsa «Calibrar» y no te muevas unos 2 segundos. Después arranca pedaleando recto durante unos 3 segundos.',
+      s: '<line class="st" x1="10" y1="95" x2="230" y2="95"/><g class="a-ride">' + BIKE + PHONE + '</g><text class="a-t1" x="120" y="14" text-anchor="middle">Quieta, 2 s</text><text class="a-t2" x="120" y="14" text-anchor="middle">Pedalea recto, 3 s</text>' },
+    { t: '4. Pon la pendiente a 0', x: 'Con la bici en una calle llana, mira «Pendiente». Si no marca cerca de 0, pulsa «Poner a 0». Así la pendiente y el freno salen bien.',
+      s: '<g class="a-level"><line class="st" x1="10" y1="95" x2="230" y2="95"/>' + BIKE + PHONE + '</g><text class="a-n1" x="120" y="14" text-anchor="middle" style="fill:#f6b93b">Pendiente +4 %</text><text class="a-n2" x="120" y="14" text-anchor="middle" style="fill:#3ecf8e">Pendiente 0 %</text>' },
+    { t: '5. Ajusta y sal', x: 'Con «alta» o «muy alta» se detectan frenadas suaves; si salta con baches, bájala. Si usas un móvil viejo de luz trasera, pulsa «Modo luz trasera».',
+      s: '<rect class="fl" x="92" y="6" width="56" height="98" rx="9"/><circle class="a-glow" cx="120" cy="55" r="22" stroke="#00000066" stroke-width="2"/><text x="120" y="96" text-anchor="middle" style="font-size:8px">Frenando</text>' }
+  ];
+  var tutI = 0;
+  function showTut() {
+    var s = TUT[tutI];
+    $('tutScene').innerHTML = '<svg viewBox="0 0 240 110" role="img" aria-label="' + s.t + '">' + s.s + '</svg>';
+    $('tutTitle').textContent = s.t; $('tutText').textContent = s.x;
+    $('tutDots').innerHTML = TUT.map(function (_, i) { return '<i class="' + (i === tutI ? 'on' : '') + '"></i>'; }).join('');
+    $('tutBack').style.visibility = tutI === 0 ? 'hidden' : 'visible';
+    $('tutNext').textContent = tutI === TUT.length - 1 ? 'Listo' : 'Siguiente';
+  }
+  function openTut() { tutI = 0; showTut(); $('tut').hidden = false; $('btnHelp').classList.remove('new'); try { localStorage.setItem('luzfreno_tut', '1'); } catch (e) {} }
+  function closeTut() { $('tut').hidden = true; }
+  $('btnHelp').addEventListener('click', openTut);
+  $('tutBack').addEventListener('click', function () { if (tutI > 0) { tutI--; showTut(); } });
+  $('tutNext').addEventListener('click', function () { if (tutI < TUT.length - 1) { tutI++; showTut(); } else closeTut(); });
+  $('tut').addEventListener('click', function (e) { if (e.target === $('tut')) closeTut(); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !$('tut').hidden) closeTut(); });
+  try { if (!localStorage.getItem('luzfreno_tut')) $('btnHelp').classList.add('new'); } catch (e) {}
 
   load(); applySens(); applyFlip();
   if (!navigator.bluetooth) note('Este navegador no tiene Web Bluetooth. Para conectar la luz usa Chrome en Android. La demo funciona en cualquier navegador.');
