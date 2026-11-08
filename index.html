@@ -210,12 +210,14 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
     opts = opts || {};
     this.cfg = {
       sensitivity: 1.0,       // multiplica los umbrales (menor = más sensible)
-      brakeOn: -0.7,          // m/s² filtrados para entrar en FRENANDO
-      brakeOff: -0.3,         // m/s² para salir
+      brakeOn: -0.5,          // m/s² filtrados para entrar en FRENANDO (~0,05 g)
+      brakeOff: -0.3,         // m/s² para salir (~0,03 g): histéresis
       brakeOnTime: 0.35,      // s acumulados bajo el umbral para confirmar (filtra baches)
       brakeOffTime: 0.80,
       emergency: -4.0,        // m/s² para EMERGENCIA
       fwdTau: 0.20,           // s, filtro de aceleración longitudinal
+      shock: 8.0,             // m/s² de golpe vertical (bache/bordillo) que congela la detección
+      shockHold: 0.25,        // s de congelación tras un golpe
       medianWin: 0.22,        // s, ventana de mediana (quita baches de <0.1 s)
       slopeTau: 2.5,          // s, filtro lento para estimar la pendiente
       gpsAccTau: 1.5,         // s, filtro de la aceleración medida por GPS
@@ -261,6 +263,7 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
     this._aUse = 0;
     this._gpsPrev = null;
     this.brakeAcc = 0;
+    this.vF = null; this.vSlow = null; this.shockUntil = -1;
     this.vib = 0;             // RMS de vibración (m/s²)
     this.lastMoving = -1e9;
     this.lastBrakeEnd = -1e9;
@@ -405,8 +408,15 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
     if (!this.fwdInit) { this.fwd = this.fwdMid = this.fwdLong = med; this.fwdInit = true; }
     this.fwdMid += (1 - Math.exp(-dt / 1.0)) * (med - this.fwdMid);
     this.fwdLong += (1 - Math.exp(-dt / 4.0)) * (med - this.fwdLong);
+    // golpe vertical (bache, bordillo): congela fwd y la cuenta de freno unos instantes
+    var vert = dot(m, this.calib.u0);
+    if (this.vF === null) { this.vF = vert; this.vSlow = vert; }
+    this.vF += (1 - Math.exp(-dt / 0.05)) * (vert - this.vF);
+    this.vSlow += (1 - Math.exp(-dt / 1.0)) * (vert - this.vSlow);
+    if (Math.abs(this.vF - this.vSlow) > cfg.shock) this.shockUntil = t + cfg.shockHold;
+    var shocked = t < this.shockUntil;
     var aF = 1 - Math.exp(-dt / cfg.fwdTau);
-    this.fwd += aF * ((med - cfg.trim) - this.fwd);
+    if (!shocked) this.fwd += aF * ((med - cfg.trim) - this.fwd);
 
     var gpsOk = this.gps.speed !== null && (t - this.gps.t) <= cfg.gpsFresh;
     var gpsMoving = gpsOk && this.gps.speed > 2.0;
@@ -451,7 +461,8 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
     switch (this.state) {
       case 0: // RODANDO
         // acumulador con fuga: el ruido del pedaleo no reinicia la cuenta
-        if (braking && !longStill) this.brakeAcc += dt;
+        if (shocked) { /* golpe: ni suma ni resta */ }
+        else if (braking && !longStill) this.brakeAcc += dt;
         else this.brakeAcc = Math.max(0, this.brakeAcc - 1.5 * dt);
         if (this.brakeAcc >= cfg.brakeOnTime) {
           this._set(t, emergency ? 3 : 1, emergency ? 'Frenada de emergencia' : 'Frenando');
@@ -511,7 +522,7 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
     'Parado: la luz sigue encendida hasta que arranques.',
     'Frenada muy fuerte: destello rápido.'
   ];
-  var SENS = [0.55, 0.75, 1.0, 1.3, 1.6];
+  var SENS = [0.7, 0.9, 1.15, 1.4, 1.8];
   var SENS_NAMES = ['muy alta', 'alta', 'media', 'baja', 'muy baja'];
   var $ = function (id) { return document.getElementById(id); };
   var now = function () { return performance.now() / 1000; };

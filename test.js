@@ -64,7 +64,8 @@ function run(sens) {
       const lt = i * dt;
       const th = deg(ph.slopeDeg);
       let F = (ph.F === 'hold' ? G * Math.sin(th) : ph.F) + (v > 1 ? ph.osc * Math.sin(2 * Math.PI * 2.4 * t) : 0);
-      if (ph.bumpAt !== undefined && lt > ph.bumpAt && lt < ph.bumpAt + 0.12) F += -7;  // bache/bordillo
+      let bumpV = 0;
+      if (ph.bumpAt !== undefined && lt > ph.bumpAt && lt < ph.bumpAt + 0.12) { F += -7; bumpV = 14; }  // bache/bordillo (también golpe vertical)
       let a = F - G * Math.sin(th);
       if (v <= 0 && a < 0) { v = 0; a = 0; F = G * Math.sin(th); }          // parado, sujeto por el freno
       else v = Math.max(0, v + a * dt);
@@ -73,7 +74,7 @@ function run(sens) {
       const mb = [
         F + G * 0 + G * Math.sin(th) * 0,   // F ya es la fuerza específica longitudinal
         gauss(rnd) * (0.03 + 0.5 * sv),
-        G * Math.cos(th) + gauss(rnd) * (0.03 + 1.0 * sv)
+        G * Math.cos(th) + bumpV + gauss(rnd) * (0.03 + 1.0 * sv)
       ];
       mb[0] += gauss(rnd) * (0.03 + 0.5 * sv);
       const m = mul(R, mb);
