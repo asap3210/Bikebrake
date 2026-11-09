@@ -1,6 +1,6 @@
 /* Service worker: deja la app disponible sin conexión.
  * Sube el número de versión cuando cambies index.html para que los móviles se actualicen. */
-const VERSION = 'luz-freno-v6';
+const VERSION = 'luz-freno-v7';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
 
 self.addEventListener('install', (e) => {

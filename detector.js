@@ -28,6 +28,7 @@
   function norm(a) { return Math.sqrt(dot(a, a)); }
   function scale(a, s) { return [a[0] * s, a[1] * s, a[2] * s]; }
   function sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+  function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
   function unit(a) { var n = norm(a); return n > 1e-9 ? scale(a, 1 / n) : null; }
 
   function Detector(opts) {
@@ -60,8 +61,11 @@
     };
     for (var k in opts) this.cfg[k] = opts[k];
 
-    this.calib = { u0: null, f: null };
-    this.calibState = 'none'; // none | rest | push | done | failed
+    this.calib = { u0: null, f: null, l: null };
+    this.calibState = 'none'; // none | rest | push | done | failed | mismatch
+    this.quick = null;        // reajuste automático de inclinación en curso
+    this.quickState = 'none'; // none | wait | done | timeout
+    this.verify = null;       // comprobación de la dirección «adelante» en el primer arranque
     this._cal = null;
     this.reset();
   }
@@ -125,14 +129,82 @@
   Detector.prototype.isCalibrated = function () { return !!(this.calib.f && this.calib.u0); };
 
   Detector.prototype.setCalibration = function (c) {
-    if (c && c.f && c.u0) { this.calib = { f: c.f.slice(), u0: c.u0.slice() }; this.calibState = 'done'; }
+    if (c && c.f && c.u0) {
+      var l = c.l ? c.l.slice() : unit(cross(c.u0, c.f));   // eje lateral de la bici
+      this.calib = { f: c.f.slice(), u0: c.u0.slice(), l: l };
+      this.calibState = 'done';
+    }
+  };
+
+  /* Reajuste automático de inclinación (el soporte pivota hacia delante/atrás):
+   * con la bici quieta y HORIZONTAL se mide de nuevo «arriba» y «adelante» sale del
+   * eje lateral guardado:  adelante = lateral × arriba.  Hasta lograrlo (bici quieta
+   * 2 s) sigue valiendo la calibración anterior; a los 20 s sin lograrlo se abandona. */
+  Detector.prototype.startQuick = function () {
+    if (!this.isCalibrated() || !this.calib.l) return false;
+    this.quick = { sum: [0, 0, 0], n: 0, start: null, t0: null, lastT: null, vibLP: null, vib: 0 };
+    this.quickState = 'wait';
+    return true;
+  };
+
+  Detector.prototype._quickStep = function (t, m) {
+    var c = this.quick;
+    if (c.t0 === null) c.t0 = t;
+    if (c.lastT === null) { c.lastT = t; c.vibLP = m.slice(); return; }
+    var dt = Math.max(1e-3, t - c.lastT); c.lastT = t;
+    for (var i = 0; i < 3; i++) c.vibLP[i] += (1 - Math.exp(-dt / 1.0)) * (m[i] - c.vibLP[i]);
+    var hp = sub(m, c.vibLP);
+    c.vib += (1 - Math.exp(-dt / 0.4)) * (dot(hp, hp) - c.vib);
+    if (Math.sqrt(Math.max(0, c.vib)) > 0.35) { c.start = null; c.sum = [0, 0, 0]; c.n = 0; }
+    else {
+      if (c.start === null) c.start = t;
+      for (var j = 0; j < 3; j++) c.sum[j] += m[j];
+      c.n++;
+      if (t - c.start >= 1.5 && c.n > 20) {
+        var u0 = unit(scale(c.sum, 1 / c.n));
+        var f = u0 && unit(cross(this.calib.l, u0));
+        var l = this.calib.l;
+        if (f && Math.abs(dot(f, l)) < 0.2) {
+          this.calib = { u0: u0, f: f, l: l };
+          this.cfg.trim = 0; this.slopeInit = false; this.warmT0 = null;
+          this.quick = null; this.quickState = 'done';
+          this.verify = { sum: [0, 0, 0], n: 0, start: null, tries: 0, bad: 0 };
+          this._log(t, 'Inclinación reajustada');
+        } else { this.quick = null; this.quickState = 'timeout'; }
+        return;
+      }
+    }
+    if (t - c.t0 > 20) { this.quick = null; this.quickState = 'timeout'; this._log(t, 'Reajuste de inclinación no hecho (bici en movimiento)'); }
+  };
+
+  /* Primer arranque tras el reajuste: la fuerza horizontal media debe ir hacia «adelante».
+   * Solo avisa si es claramente lateral (el móvil se colocó girado: hay que calibrar entero). */
+  Detector.prototype._verifyStep = function (t, m, rms) {
+    var v = this.verify;
+    if (v.start === null) { if (rms > 0.6) v.start = t; else return; }
+    var along = dot(m, this.calib.u0);
+    var h = sub(m, scale(this.calib.u0, along));
+    for (var k = 0; k < 3; k++) v.sum[k] += h[k];
+    v.n++;
+    if (t - v.start < 3.0) return;
+    var hm = scale(v.sum, 1 / v.n), nh = norm(hm);
+    if (nh >= 0.5) {
+      var cs = dot(hm, this.calib.f) / nh;
+      if (cs > 0.8) { this.verify = null; return; }
+      if (Math.abs(cs) < 0.7 && ++v.bad >= 2) {   // dos ventanas seguidas claramente laterales
+        this.calibState = 'mismatch'; this.verify = null; this._log(t, 'El móvil está girado: calibra de nuevo'); return;
+      }
+    }
+    if (++v.tries >= 4) { this.verify = null; return; }
+    v.sum = [0, 0, 0]; v.n = 0; v.start = null;
   };
 
   /* Calibración: 1) quieto en llano 1.5 s  2) arrancar pedaleando recto ~3 s. */
   Detector.prototype.startCalibration = function () {
     this.calibState = 'rest';
     this._cal = { restSum: [0, 0, 0], restN: 0, restStart: null, u0: null, pushSum: [0, 0, 0], pushN: 0, pushStart: null, lastT: null, vibLP: null, vib: 0 };
-    this.calib = { u0: null, f: null };
+    this.calib = { u0: null, f: null, l: null };
+    this.quick = null; this.quickState = 'none'; this.verify = null;
     this.cfg.trim = 0;
     this.slopeInit = false; this.warmT0 = null;
   };
@@ -171,7 +243,8 @@
       if (t - c.pushStart >= 3.0) {
         var meanH = scale(c.pushSum, 1 / c.pushN);
         if (norm(meanH) < 0.3) { this.calibState = 'failed'; return; }
-        this.calib = { u0: c.u0, f: unit(meanH) };
+        var ff = unit(meanH);
+        this.calib = { u0: c.u0, f: ff, l: unit(cross(c.u0, ff)) };
         this.calibState = 'done';
       }
     }
@@ -219,6 +292,8 @@
     var rms = Math.sqrt(Math.max(0, this.vib));
 
     if (!this.isCalibrated()) return this.state;
+    if (this.quick) this._quickStep(t, m);
+    if (this.verify && this.calibState === 'done') this._verifyStep(t, m, rms);
 
     // aceleración longitudinal (fuerza específica sobre el eje delantero)
     var sgn = cfg.flipSign ? -1 : 1;

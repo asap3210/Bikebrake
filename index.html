@@ -254,6 +254,7 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
   function norm(a) { return Math.sqrt(dot(a, a)); }
   function scale(a, s) { return [a[0] * s, a[1] * s, a[2] * s]; }
   function sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+  function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
   function unit(a) { var n = norm(a); return n > 1e-9 ? scale(a, 1 / n) : null; }
 
   function Detector(opts) {
@@ -286,8 +287,11 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
     };
     for (var k in opts) this.cfg[k] = opts[k];
 
-    this.calib = { u0: null, f: null };
-    this.calibState = 'none'; // none | rest | push | done | failed
+    this.calib = { u0: null, f: null, l: null };
+    this.calibState = 'none'; // none | rest | push | done | failed | mismatch
+    this.quick = null;        // reajuste automático de inclinación en curso
+    this.quickState = 'none'; // none | wait | done | timeout
+    this.verify = null;       // comprobación de la dirección «adelante» en el primer arranque
     this._cal = null;
     this.reset();
   }
@@ -351,14 +355,82 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
   Detector.prototype.isCalibrated = function () { return !!(this.calib.f && this.calib.u0); };
 
   Detector.prototype.setCalibration = function (c) {
-    if (c && c.f && c.u0) { this.calib = { f: c.f.slice(), u0: c.u0.slice() }; this.calibState = 'done'; }
+    if (c && c.f && c.u0) {
+      var l = c.l ? c.l.slice() : unit(cross(c.u0, c.f));   // eje lateral de la bici
+      this.calib = { f: c.f.slice(), u0: c.u0.slice(), l: l };
+      this.calibState = 'done';
+    }
+  };
+
+  /* Reajuste automático de inclinación (el soporte pivota hacia delante/atrás):
+   * con la bici quieta y HORIZONTAL se mide de nuevo «arriba» y «adelante» sale del
+   * eje lateral guardado:  adelante = lateral × arriba.  Hasta lograrlo (bici quieta
+   * 2 s) sigue valiendo la calibración anterior; a los 20 s sin lograrlo se abandona. */
+  Detector.prototype.startQuick = function () {
+    if (!this.isCalibrated() || !this.calib.l) return false;
+    this.quick = { sum: [0, 0, 0], n: 0, start: null, t0: null, lastT: null, vibLP: null, vib: 0 };
+    this.quickState = 'wait';
+    return true;
+  };
+
+  Detector.prototype._quickStep = function (t, m) {
+    var c = this.quick;
+    if (c.t0 === null) c.t0 = t;
+    if (c.lastT === null) { c.lastT = t; c.vibLP = m.slice(); return; }
+    var dt = Math.max(1e-3, t - c.lastT); c.lastT = t;
+    for (var i = 0; i < 3; i++) c.vibLP[i] += (1 - Math.exp(-dt / 1.0)) * (m[i] - c.vibLP[i]);
+    var hp = sub(m, c.vibLP);
+    c.vib += (1 - Math.exp(-dt / 0.4)) * (dot(hp, hp) - c.vib);
+    if (Math.sqrt(Math.max(0, c.vib)) > 0.35) { c.start = null; c.sum = [0, 0, 0]; c.n = 0; }
+    else {
+      if (c.start === null) c.start = t;
+      for (var j = 0; j < 3; j++) c.sum[j] += m[j];
+      c.n++;
+      if (t - c.start >= 1.5 && c.n > 20) {
+        var u0 = unit(scale(c.sum, 1 / c.n));
+        var f = u0 && unit(cross(this.calib.l, u0));
+        var l = this.calib.l;
+        if (f && Math.abs(dot(f, l)) < 0.2) {
+          this.calib = { u0: u0, f: f, l: l };
+          this.cfg.trim = 0; this.slopeInit = false; this.warmT0 = null;
+          this.quick = null; this.quickState = 'done';
+          this.verify = { sum: [0, 0, 0], n: 0, start: null, tries: 0, bad: 0 };
+          this._log(t, 'Inclinación reajustada');
+        } else { this.quick = null; this.quickState = 'timeout'; }
+        return;
+      }
+    }
+    if (t - c.t0 > 20) { this.quick = null; this.quickState = 'timeout'; this._log(t, 'Reajuste de inclinación no hecho (bici en movimiento)'); }
+  };
+
+  /* Primer arranque tras el reajuste: la fuerza horizontal media debe ir hacia «adelante».
+   * Solo avisa si es claramente lateral (el móvil se colocó girado: hay que calibrar entero). */
+  Detector.prototype._verifyStep = function (t, m, rms) {
+    var v = this.verify;
+    if (v.start === null) { if (rms > 0.6) v.start = t; else return; }
+    var along = dot(m, this.calib.u0);
+    var h = sub(m, scale(this.calib.u0, along));
+    for (var k = 0; k < 3; k++) v.sum[k] += h[k];
+    v.n++;
+    if (t - v.start < 3.0) return;
+    var hm = scale(v.sum, 1 / v.n), nh = norm(hm);
+    if (nh >= 0.5) {
+      var cs = dot(hm, this.calib.f) / nh;
+      if (cs > 0.8) { this.verify = null; return; }
+      if (Math.abs(cs) < 0.7 && ++v.bad >= 2) {   // dos ventanas seguidas claramente laterales
+        this.calibState = 'mismatch'; this.verify = null; this._log(t, 'El móvil está girado: calibra de nuevo'); return;
+      }
+    }
+    if (++v.tries >= 4) { this.verify = null; return; }
+    v.sum = [0, 0, 0]; v.n = 0; v.start = null;
   };
 
   /* Calibración: 1) quieto en llano 1.5 s  2) arrancar pedaleando recto ~3 s. */
   Detector.prototype.startCalibration = function () {
     this.calibState = 'rest';
     this._cal = { restSum: [0, 0, 0], restN: 0, restStart: null, u0: null, pushSum: [0, 0, 0], pushN: 0, pushStart: null, lastT: null, vibLP: null, vib: 0 };
-    this.calib = { u0: null, f: null };
+    this.calib = { u0: null, f: null, l: null };
+    this.quick = null; this.quickState = 'none'; this.verify = null;
     this.cfg.trim = 0;
     this.slopeInit = false; this.warmT0 = null;
   };
@@ -397,7 +469,8 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
       if (t - c.pushStart >= 3.0) {
         var meanH = scale(c.pushSum, 1 / c.pushN);
         if (norm(meanH) < 0.3) { this.calibState = 'failed'; return; }
-        this.calib = { u0: c.u0, f: unit(meanH) };
+        var ff = unit(meanH);
+        this.calib = { u0: c.u0, f: ff, l: unit(cross(c.u0, ff)) };
         this.calibState = 'done';
       }
     }
@@ -445,6 +518,8 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
     var rms = Math.sqrt(Math.max(0, this.vib));
 
     if (!this.isCalibrated()) return this.state;
+    if (this.quick) this._quickStep(t, m);
+    if (this.verify && this.calibState === 'done') this._verifyStep(t, m, rms);
 
     // aceleración longitudinal (fuerza específica sobre el eje delantero)
     var sgn = cfg.flipSign ? -1 : 1;
@@ -702,7 +777,7 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
         if (r !== 'granted') { note('Permiso de sensores denegado. Actívalo en los ajustes del navegador.'); return; }
       }
     } catch (e) { note('No se pudo pedir permiso a los sensores: ' + e.message); return; }
-    if (!sensorsOn) window.addEventListener('devicemotion', onMotion);
+    if (!sensorsOn) { window.addEventListener('devicemotion', onMotion); if (real.isCalibrated()) real.startQuick(); }
     sensorsOn = true; sensorT0 = now(); hzT = now(); nSamples = 0;
     $('btnSensors').textContent = 'Sensores activos';
     $('btnSensors').setAttribute('aria-pressed', 'true');
@@ -727,11 +802,15 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
       case 'rest': return ['Paso 1 de 2: pon la bici quieta, en llano y con el móvil ya fijado. No te muevas 2 segundos.', false];
       case 'push': return ['Paso 2 de 2: arranca pedaleando recto, sin soltar el manillar, durante unos 3 segundos.', false];
       case 'failed': return ['No noté el arranque. Vuelve a pulsar Calibrar y acelera de forma clara en línea recta.', false];
-      case 'done': return ['Calibrado. Si cambias el móvil de sitio o de ángulo, vuelve a calibrar. Si el freno sale al revés, usa “Invertir sentido”.', true];
+      case 'mismatch': return ['El móvil parece colocado girado respecto al último calibrado. Pulsa Calibrar de nuevo.', false];
+      case 'done':
+        if (d.quickState === 'wait') return ['Ajustando la inclinación: deja la bici quieta y horizontal unos 2 segundos.', false];
+        if (d.quickState === 'done') return ['Inclinación reajustada. Si cambias el móvil de sitio o lo giras, pulsa Calibrar. Si el freno sale al revés, usa “Invertir sentido”.', true];
+        return ['Calibrado.' + (d.quickState === 'timeout' ? ' No se pudo reajustar la inclinación (la bici se movía).' : '') + ' Si cambias el móvil de sitio o de ángulo, vuelve a calibrar. Si el freno sale al revés, usa “Invertir sentido”.', true];
       default: return ['Sin calibrar. Con el móvil ya fijado al manillar, pulsa Calibrar.', false];
     }
   }
-  var lastCalState = '';
+  var lastCalState = '', lastQuick = '';
   function showCalib() {
     if (demo) return;
     var st = real.calibState;
@@ -861,7 +940,8 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
 
     if ($('torchMode').value === 'brake') driveTorch(rearLevel(s, t - lampSince, t) > 0.5);
     var hasData = demo || (sensorsOn && t - lastSample < 1.5);
-    var okCal = det.isCalibrated();
+    var okCal = det.isCalibrated() && det.calibState !== 'mismatch';
+    if (!demo && det === real && real.quickState !== lastQuick) { lastQuick = real.quickState; lastCalState = ''; }
     var st = $('state');
     if (!hasData && overrideState === null) { st.textContent = sensorsOn ? 'Sin señal' : 'Sin datos'; st.dataset.s = '0'; }
     else if (!okCal && !demo) { st.textContent = 'Sin calibrar'; st.dataset.s = '0'; $('why').textContent = 'Calibra para saber hacia dónde va la bici.'; }
@@ -871,11 +951,11 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
       var sl = $('screenLight');
       var lvO = lv, msg = '', big = '', small = '';
       if (rearMode) {
-        var noCal = !demo && !det.isCalibrated();
+        var noCal = !demo && (!okCal || real.quickState === 'wait');
         var noSig = !demo && !noCal && !(sensorsOn && t - lastSample < 1.5);
         if (noCal) {
           msg = calibText(real)[0]; lvO = 0.12;
-          if (real.calibState === 'failed' && !reCalTimer) reCalTimer = setTimeout(function () { reCalTimer = null; real.startCalibration(); }, 2500);
+          if ((real.calibState === 'failed' || real.calibState === 'mismatch') && !reCalTimer) reCalTimer = setTimeout(function () { reCalTimer = null; real.startCalibration(); }, 2500);
         } else if (noSig) {
           msg = 'Sin datos de los sensores. Revisa que la pantalla siga encendida.'; lvO = (t % 1) < 0.5 ? 0.7 : 0.15;
         } else lvO = rearLevel(s, t - lampSince, t);
@@ -1044,7 +1124,7 @@ select { font: inherit; background: #1e232a; color: var(--text); border: 1px sol
   var TUT = [
     { t: '1. Fija el móvil', x: 'Sujétalo al manillar con la pantalla hacia ti y bien firme. Mantén la pantalla encendida y con poco brillo: si el móvil duerme, dejan de llegar datos.',
       s: '<line class="st" x1="20" y1="95" x2="220" y2="95"/>' + BIKE + '<g class="a-drop">' + PHONE + '</g>' },
-    { t: '2. Inicia los sensores', x: 'Pulsa «Iniciar sensores» y acepta el permiso de ubicación: da la velocidad por GPS. Arriba debe aparecer «Sensores: 60 Hz».',
+    { t: '2. Inicia los sensores', x: 'Pulsa «Iniciar sensores» y acepta el permiso de ubicación: da la velocidad por GPS. Arriba debe aparecer «Sensores: 60 Hz». Con la bici quieta y horizontal, reajusta sola la inclinación del móvil.',
       s: '<rect class="fl" x="90" y="8" width="60" height="94" rx="9"/><rect class="a-pulse" x="98" y="62" width="44" height="16" rx="6" fill="#3ecf8e22" stroke="#3ecf8e" stroke-width="2"/><text x="120" y="73" text-anchor="middle" style="font-size:7px">Sensores</text><text class="a-blink" x="120" y="30" text-anchor="middle" style="fill:#3ecf8e">60 Hz</text>' },
     { t: '3. Calibra', x: 'Con la bici quieta y en llano, pulsa «Calibrar» y no te muevas unos 2 segundos. Después arranca pedaleando recto durante unos 3 segundos.',
       s: '<line class="st" x1="10" y1="95" x2="230" y2="95"/><g class="a-ride">' + BIKE + PHONE + '</g><text class="a-t1" x="120" y="14" text-anchor="middle">Quieta, 2 s</text><text class="a-t2" x="120" y="14" text-anchor="middle">Pedalea recto, 3 s</text>' },
